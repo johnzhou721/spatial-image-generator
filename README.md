@@ -18,24 +18,7 @@ USAGE
 
 Obtain metric depth anything v2 and depth pro checkpoints and put into checkpoints folder.
 
-Change the settings on top of ``main.py`` (note -- a lot of comments referred to some personal
-files, so ignore them):
-```
-# Below has a lot of personal values.
-# In the sense of these comments won't
-# make sense if you're someone else because
-# I have specific pictures that I am
-# converting.
-FILE = "ai-1280-pixabay_spatial.heic"
-#DEPTH_ZERO = 5 #-- f1
-#DEPTH_ZERO = 14 #-- f1 5517 depth pro, 7.5 for depth anything
-DEPTH_ZERO = 4.2 #-- pixabay
-DEPTH_ADJ = 1  # multiplier
-MODE = 'vkitti'  # useless if depthpro
-SIZE = 'vitl'
-FOCAL_LENGTH = None  # f1 regular 8k: 5547, 4k 2274
-DEPTHPRO = True  # more accurate for medium size images
-```
+See ``--help`` for how to parse the args.
 
 ``FILE`` is the file path, ``DEPTH_ZERO`` is the depth of the zero disparity plane, ``DEPTH_ADJ`` is the value that the final disparity is multiplied by, ``MODE`` is either ``hypersim`` or ``vkitti`` for indoor or outdoor, ``SIZE`` is the encoder.  Or you can just specify random stuff for ``MODE`` and ``SIZE`` which are needed for Depth Anything V2 only, and use Depth Pro instead -- change ``DEPTHPRO`` to toggle the flag.  ``FOCAL_LENGTH`` is a bit special -- the EXIF data would take precedence for that, if not found it will look here, else it uses Depth Pro to estimate the focal length.
 
@@ -48,7 +31,7 @@ This thing is untested; therefore any testing of how this works with images on a
 TODO
 ----
 
-A command-line tool with actual parsing, possibly an UI.
+An UI and video conversion.
 
 LICENSE
 -------
