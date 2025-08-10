@@ -48,7 +48,8 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
 ```
 Rubicon-objc is used to
 save the final image into HEIC; ChatGPT helped a lot with binding up all the C functions for
-spatialconverter.py -- but even then I have written significant portions of both files by hand.
+spatialconverter.py -- basically putting in the appropriate amount of void pointers and some other stuff,
+but even then I have written extremely significant portions of both files by hand.
 
 ``spatialconverter.py`` is derived from Apple's official Writing Spatial Photos sample, converted into Python,
 but I also got rid of field of view and just used focal length as the parameter instead.  The Writing Spatial Photos
