@@ -1,0 +1,8 @@
+*.heic
+*.webp
+# my virtual env
+myenv
+*.png
+*.jpg
+checkpoints
+__pycache__
