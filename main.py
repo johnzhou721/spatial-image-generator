@@ -15,27 +15,9 @@ from PIL import Image
 from depth_anything_v2_metric.dpt import DepthAnythingV2 as DepthAnythingV2Metric
 import depth_pro
 from os import path
-
-# Below has a lot of personal values.
-# In the sense of these comments won't
-# make sense if you're someone else because
-# I have specific pictures that I am
-# converting.
-FILE = "ai-1280-pixabay_spatial.heic"
-#DEPTH_ZERO = 5 #-- f1
-#DEPTH_ZERO = 14 #-- f1 5517 depth pro, 7.5 for depth anything
-DEPTH_ZERO = 4.2 #-- pixabay
-DEPTH_ADJ = 1  # multiplier
-MODE = 'vkitti'  # useless if depthpro
-SIZE = 'vitl'
-FOCAL_LENGTH = None  # f1 regular 8k: 5547, 4k 2274
-DEPTHPRO = True  # more accurate for medium size images
-
-
+import argparse
 
 DEVICE = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
-
-print("Imports Handled")
 
 def pil_path_to_cv2(path: str) -> np.ndarray:
     pil_image = Image.open(path)
@@ -96,12 +78,22 @@ def threshold_to_image(array: np.ndarray, value: float, output_path: str):
     img.save(output_path)
     print(f"Thresholds saved to {output_path}")
 
+def to_numpy(x):
+    if isinstance(x, torch.Tensor):
+        return x.cpu().numpy()
+    elif isinstance(x, (np.ndarray, np.generic)):
+        # Already numpy array or numpy scalar
+        return x
+    else:
+        # fallback, e.g. Python scalar
+        return np.array(x)
+
 
 def predict_focal_length_px(image_path: str, focal_length = None, depth = False) -> float:
 
     image, _, f_px = depth_pro.load_rgb(image_path)
 
-    if f_px or focal_length and not depth:
+    if (f_px or focal_length) and not depth:
         print("Focal Length from EXIF extracted / provided")
         return f_px or focal_length
 
@@ -111,13 +103,13 @@ def predict_focal_length_px(image_path: str, focal_length = None, depth = False)
     model.eval()
 
     with torch.no_grad():
-        prediction = model.infer(image, f_px=f_px)
+        prediction = model.infer(image, f_px=f_px or focal_length)
 
     print("Depth Pro estimates focal length")
     if depth:
-        return prediction["focallength_px"].cpu().numpy().item(), prediction["depth"].cpu().numpy()
+        return to_numpy(prediction["focallength_px"]).item(), to_numpy(prediction["depth"])
     else:
-        return prediction["focallength_px"].cpu().numpy().item()
+        return to_numpy(prediction["focallength_px"]).item()
 
 import multiprocessing as mp
 
@@ -206,6 +198,52 @@ def save_scaled_image(arr, path):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Generate spatial images from a single view using Depth Anything V2 or Depth Pro models."
+    )
+    parser.add_argument(
+        '--file', type=str, required=True,
+        help="Input image file path"
+    )
+    parser.add_argument(
+        '--depth_zero', type=float, required=True,
+        help="Depth of the zero disparity plane"
+    )
+    parser.add_argument(
+        '--depth_adj', type=float, default=1.0,
+        help="Multiplier for the final disparity value"
+    )
+    parser.add_argument(
+        '--mode', type=str, choices=['hypersim', 'vkitti'],
+        default='hypersim',
+        help="Mode setting: 'hypersim' for indoor, 'vkitti' for outdoor scenes (default: %(default)s)"
+    )
+    parser.add_argument(
+        '--size', type=str, default='vitl',
+        help="Encoder size (default: %(default)s)"
+    )
+    parser.add_argument(
+        '--focal_length', type=float,
+        help="Focal length in pixels; if None, EXIF or Depth Pro estimation is used"
+    )
+    parser.add_argument(
+        '--depthpro', action='store_true',
+        help="Use Depth Pro model (default is False)"
+    )
+
+    args = parser.parse_args()
+
+    # Assigning args to your original variables:
+    FILE = args.file
+    print(FILE)
+    DEPTH_ZERO = args.depth_zero
+    DEPTH_ADJ = args.depth_adj
+    MODE = args.mode
+    SIZE = args.size
+    FOCAL_LENGTH = args.focal_length
+    DEPTHPRO = args.depthpro
+
+
 
     if DEPTHPRO:
         predicted_focal_length_px, predicted_depth = predict_focal_length_px(FILE, FOCAL_LENGTH, True)
