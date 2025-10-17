@@ -196,6 +196,87 @@ def save_scaled_image(arr, path):
     arr = np.clip(arr, 0, 255).astype(np.uint8)
     Image.fromarray(arr).save(path)
 
+def save_disparity_8bit(disparity: np.ndarray, path: str):
+    # Function from ChatGPT
+    
+    # Replace NaNs and infs with zeros
+    disp = np.nan_to_num(disparity, nan=0.0, posinf=0.0, neginf=0.0)
+
+    # Normalize to [0, 255]
+    d_min, d_max = disp.min(), disp.max()
+    if np.isclose(d_max, d_min):
+        disp_norm = np.zeros_like(disp, dtype=np.uint8)
+    else:
+        disp_norm = ((disp - d_min) / (d_max - d_min) * 255).astype(np.uint8)
+
+    # Save as PNG
+    Image.fromarray(disp_norm).save(path)
+    print(f"Disparity saved to {path}, min={disp.min():.4f}, max={disp.max():.4f}")
+
+def smooth_depth(depth_map):
+    depth_float = depth_map.astype(np.float32)
+    
+    blurred_depth = cv2.GaussianBlur(depth_float, (3, 3), sigmaX=0, sigmaY=0)
+    
+    return blurred_depth
+
+def backward_warp_image(image, disparity, left_view=True, iterations=2):
+    """
+    Backward warp an image using source-aligned disparity with fixed-point iterations.
+    """
+    H, W = disparity.shape
+    C = image.shape[2]
+    shift_sign = 0.5 if left_view else -0.5
+
+    # 1. Create target pixel grid
+    x_target, y_target = np.meshgrid(np.arange(W), np.arange(H))
+    x_target = x_target.astype(np.float32)
+    y_target = y_target.astype(np.float32)
+
+    # 2. Initialize source coordinates
+    x_source = x_target.copy()
+
+    # 3. Fixed-point iterations to solve x_source = x_target - shift * d[x_source]
+    for _ in range(iterations):
+        # Bilinear sample disparity at current source positions
+        d_interp = cv2.remap(
+            disparity.astype(np.float32),
+            x_source,
+            y_target,
+            interpolation=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_REPLICATE
+        )
+        # Update source coordinates
+        x_source = x_target - shift_sign * d_interp
+
+    # 4. Clip coordinates to valid range
+    x_source = np.clip(x_source, 0, W - 1)
+    y_source = np.clip(y_target, 0, H - 1)
+
+    # 5. Warp image
+    warped_img = np.zeros_like(image)
+    for c in range(C):
+        warped_img[..., c] = cv2.remap(
+            image[..., c],
+            x_source,
+            y_source,
+            interpolation=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=0
+        )
+
+    # 6. Warp disparity to target view
+    warped_disparity = cv2.remap(
+        disparity.astype(np.float32),
+        x_source,
+        y_source,
+        interpolation=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0
+    )
+
+    return warped_img, warped_disparity
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
@@ -253,16 +334,16 @@ if __name__ == "__main__":
         print(predicted_depth.min(), predicted_depth.max())
         threshold_to_image(predicted_depth, value=DEPTH_ZERO, output_path=path.splitext(FILE)[0] + "_threshold.png")
         predicted_focal_length_px = predict_focal_length_px(FILE, FOCAL_LENGTH)
-
+    predicted_depth = smooth_depth(predicted_depth)
     #print(predicted_depth)
     save_scaled_image(predicted_depth, path.splitext(FILE)[0] + '_depth.png')
     print(predicted_focal_length_px)
     disparity = (predicted_focal_length_px * 0.064) * (1 / predicted_depth - 1 / DEPTH_ZERO) * DEPTH_ADJ
     print(disparity)
-    print(disparity)
+    save_disparity_8bit(disparity, path.splitext(FILE)[0] + "_disparity.png")
     image = np.array(Image.open(FILE))  # open image
-    warped_left = warp_image_with_disparity(image, disparity, left_view=True)
-    warped_right = warp_image_with_disparity(image, disparity, left_view=False)
+    warped_left, _ = backward_warp_image(image, disparity, left_view=True)
+    warped_right, _ = backward_warp_image(image, disparity, left_view=False)
     Image.fromarray(warped_left).save(path.splitext(FILE)[0] + '_left.png')
     Image.fromarray(warped_right).save(path.splitext(FILE)[0] + '_right.png')
 

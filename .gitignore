@@ -4,5 +4,6 @@
 myenv
 *.png
 *.jpg
+*.jpeg
 checkpoints
 __pycache__
