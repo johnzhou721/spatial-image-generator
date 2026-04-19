@@ -158,80 +158,6 @@ def predict_focal_length_px(image_path: str, focal_length=None, depth=False):
 
     return (focal, depth_map) if depth else focal
 
-import multiprocessing as mp
-
-def warp_row(args):
-    y, image_row, disparity_row, W, channels, shift = args
-    warped_row = np.full((W, channels), np.nan)
-    disparity_buffer = np.full(W, -np.inf)
-    for x in range(W):
-        d = disparity_row[x]
-        target_x = int(round(x + shift * d))
-        if 0 <= target_x < W:
-            if d > disparity_buffer[target_x]:
-                disparity_buffer[target_x] = d
-                warped_row[target_x, :] = image_row[x, :]
-    return y, warped_row
-    
-def inpaint_row(args):
-    y, row, W, channels, left_view = args
-    row = row.copy()
-    inpaint = -1 if left_view else 1
-    order = range(W) if left_view else range(W-1, -1, -1)
-    for x in order:
-        if np.isnan(row[x, 0]):
-            neighbor_x = x + inpaint
-            if 0 <= neighbor_x < W:
-                row[x, :] = row[neighbor_x, :]
-    inpaint = 1 if left_view else -1
-    order = range(W-1, -1, -1) if left_view else range(W)
-    for x in order:
-        if np.isnan(row[x, 0]):
-            neighbor_x = x + inpaint
-            if 0 <= neighbor_x < W:
-                row[x, :] = row[neighbor_x, :]
-                if np.isnan(row[x, 0]):
-                    print(f"ASSERT2 {y} {x} {left_view}")
-            else:
-                row[x, :] = np.zeros(channels, dtype=row.dtype)
-    return y, row
-
-def warp_image(image, disparity, left_view=True):
-    H, W = disparity.shape
-    channels = image.shape[2]
-    shift = 0.5 if left_view else -0.5
-
-    args = [(y, image[y], disparity[y], W, image.shape[2], shift) for y in range(H)]
-
-    with mp.Pool(3) as pool:
-        results = pool.map(warp_row, args)
-
-    warped_img = np.full((H, W, channels), np.nan)
-    for y, warped_row in results:
-        warped_img[y] = warped_row
-
-    print("Warp finished (parallel)")
-    return warped_img
-
-
-def inpaint_image(image, warped_img, left_view):
-    H, W, channels = warped_img.shape
-
-    args = [(y, warped_img[y], W, image.shape[2], left_view) for y in range(H)]
-    with mp.Pool(3) as pool:
-        results = pool.map(inpaint_row, args)
-
-    inpainted_img = np.empty_like(warped_img)
-    for y, row in results:
-        inpainted_img[y] = row
-
-    print("Inpaint finished (parallel)")
-    return inpainted_img.astype(image.dtype)
-
-
-def warp_image_with_disparity(image, disparity, left_view=True):
-    warped_img = warp_image(image, disparity, left_view)
-    return inpaint_image(image, warped_img, left_view)
 
 def save_scaled_image(arr, path):
     arr = np.asarray(arr, dtype=np.float64)
@@ -263,9 +189,9 @@ def save_disparity_8bit(disparity: np.ndarray, path: str):
 def smooth_depth(depth_map):
     depth_float = depth_map.astype(np.float32)
     
-    blurred_depth = cv2.GaussianBlur(depth_float, (3, 3), sigmaX=0, sigmaY=0)
+    # blurred_depth = cv2.GaussianBlur(depth_float, (3, 3), sigmaX=0, sigmaY=0)
     
-    return blurred_depth
+    return depth_float
 
 import numpy as np
 from numba import njit, prange
@@ -284,9 +210,6 @@ def gpu_style_fill_numba(image, mask, left_view=True):
     for y in prange(H):
         row = out[y]
 
-        # -------------------------
-        # PASS 1
-        # -------------------------
         if left_view:
             order_start, order_end, step = 0, W, 1
         else:
@@ -294,18 +217,24 @@ def gpu_style_fill_numba(image, mask, left_view=True):
 
         last_valid = np.full((C,), np.nan, dtype=np.float32)
         pixel_count = 0
+        last_valid_loc = 0
         for x in range(order_start, order_end, step):
             if not mask[y, x]:
+                if x - last_valid_loc - 1 > 0:
+                    validator = last_valid if x - last_valid_loc - 1 >= 3 else row[last_valid_loc].copy()
+                    for i in range(last_valid_loc+1, x):
+                        if not np.isnan(validator).all():
+                            for c in range(C):
+                                row[i, c] = validator[c]
+                            mask[y, i] = False
+
                 pixel_count += 1
                 # only accept stable region AFTER run is confirmed
                 if pixel_count >= 15:
                     last_valid = row[x].copy()
+                last_valid_loc = x
             else:
                 pixel_count = 0
-                if not np.isnan(last_valid).all():
-                    for c in range(C):
-                        row[x, c] = last_valid[c]
-                    mask[y, x] = False
 
 
     return out
@@ -364,10 +293,6 @@ def warp_image_zbuffer(image, disparity, predicted_depth, left_view=True):
     out[dst_keep] = img_f.reshape(-1, c)[src_keep]
 
     out = out.reshape(h, w, c)
-
-    # =========================================================
-    # 🧠 DEPTH-AWARE HOLE FILLING
-    # =========================================================
 
     mask = np.isnan(out[..., 0])
     out = gpu_style_fill_numba(out, mask, left_view)
