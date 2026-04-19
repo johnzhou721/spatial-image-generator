@@ -1,6 +1,8 @@
 A Python script to generate spatial images for visionOS
 from a single view.
 
+
+
 I ultimately intend this to compete with Spatial Media Toolkit,
 but that will take a LOT of work to get it up and running.  I
 have NFI how that tool sorts out the focal length, I used Depth
@@ -48,8 +50,11 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
 ```
 Rubicon-objc is used to
 save the final image into HEIC; ChatGPT helped a lot with binding up all the C functions for
-spatialconverter.py -- basically putting in the appropriate amount of void pointers and some other stuff,
-but even then I have written extremely significant portions of both files by hand.
+spatialconverter.py -- basically putting in the appropriate amount of void pointers and some other stuff.
+
+I've also prompted ChatGPT meticulously for the wrapping algorithm, noticing all the issues and debugging ChatGPT's code.  So while the actual execution is by ChatGPT, the idea and algorithms are mine.
+
+The inpainting is a pretty naive heuristic.  But without predictive techniques, this may be the best I can do.
 
 ``spatialconverter.py`` is derived from Apple's official Writing Spatial Photos sample, converted into Python,
 but I also got rid of field of view and just used focal length as the parameter instead.  The Writing Spatial Photos
