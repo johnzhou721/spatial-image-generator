@@ -16,8 +16,16 @@ from depth_anything_v2_metric.dpt import DepthAnythingV2 as DepthAnythingV2Metri
 import depth_pro
 from os import path
 import argparse
+import hashlib
 
 DEVICE = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
+
+def _cache_path(image_path, cache_dir="checkpoints"):
+    h = hashlib.md5(image_path.encode()).hexdigest()
+    return path.join(cache_dir, f"depthpro_{h}.npz")
+def _depth_cache_path(image_path, dataset, encoder, cache_dir="checkpoints"):
+    h = hashlib.md5(f"{image_path}_{dataset}_{encoder}".encode()).hexdigest()
+    return path.join(cache_dir, f"depth_anything_{h}.npz")
 
 def pil_path_to_cv2(path: str) -> np.ndarray:
     pil_image = Image.open(path)
@@ -31,16 +39,29 @@ def pil_path_to_cv2(path: str) -> np.ndarray:
     return opencv_image
 
 def infer_depth_from_image(image_path, dataset='hypersim', checkpoint_dir='checkpoints', encoder='vits'):
+
+    cache_file = _depth_cache_path(image_path, dataset, encoder)
+
+    # ---- LOAD CACHE ----
+    if path.exists(cache_file):
+        data = np.load(cache_file, allow_pickle=True)
+        print("Depth Anything cache hit")
+        return data["depth"]
+
     model_configs = {
         'vits': {'encoder': 'vits', 'features': 64, 'out_channels': [48, 96, 192, 384]},
         'vitb': {'encoder': 'vitb', 'features': 128, 'out_channels': [96, 192, 384, 768]},
         'vitl': {'encoder': 'vitl', 'features': 256, 'out_channels': [256, 512, 1024, 1024]},
         'vitg': {'encoder': 'vitg', 'features': 384, 'out_channels': [1536, 1536, 1536, 1536]}
     }
+
     max_depth = 20 if dataset == 'hypersim' else 80
-    
+
     model = DepthAnythingV2Metric(**{**model_configs[encoder], 'max_depth': max_depth})
-    model.load_state_dict(torch.load(f'{checkpoint_dir}/depth_anything_v2_metric_{dataset}_{encoder}.pth', map_location='cpu'))
+    model.load_state_dict(
+        torch.load(f'{checkpoint_dir}/depth_anything_v2_metric_{dataset}_{encoder}.pth',
+        map_location='cpu')
+    )
     model.to(DEVICE)
     model.eval()
 
@@ -48,10 +69,18 @@ def infer_depth_from_image(image_path, dataset='hypersim', checkpoint_dir='check
     if image is None:
         raise FileNotFoundError(f"Image not found at: {image_path}")
 
-    depth = model.infer_image(image)  # HxW depth map in meters
+    depth = model.infer_image(image)
 
     print("Depth Anything Finished")
+
+    # ---- SAVE CACHE ----
+    np.savez_compressed(
+        cache_file,
+        depth=depth
+    )
+
     return depth
+
 
 def threshold_to_image(array: np.ndarray, value: float, output_path: str):
     """
@@ -89,7 +118,15 @@ def to_numpy(x):
         return np.array(x)
 
 
-def predict_focal_length_px(image_path: str, focal_length = None, depth = False) -> float:
+def predict_focal_length_px(image_path: str, focal_length=None, depth=False):
+
+    cache_file = _cache_path(image_path)
+
+    # ---- LOAD CACHE ----
+    if depth and path.exists(cache_file):
+        data = np.load(cache_file, allow_pickle=True)
+        print("Depth Pro cache hit")
+        return data["focal"].item(), data["depth"]
 
     image, _, f_px = depth_pro.load_rgb(image_path)
 
@@ -97,19 +134,29 @@ def predict_focal_length_px(image_path: str, focal_length = None, depth = False)
         print("Focal Length from EXIF extracted / provided")
         return f_px or focal_length
 
-    model, transform = depth_pro.create_model_and_transforms(device=DEVICE, precision=torch.float16)
+    model, transform = depth_pro.create_model_and_transforms(
+        device=DEVICE,
+        precision=torch.float16
+    )
     image = transform(image)
-    
     model.eval()
 
     with torch.no_grad():
         prediction = model.infer(image, f_px=f_px or focal_length)
 
+    focal = to_numpy(prediction["focallength_px"]).item()
+    depth_map = to_numpy(prediction["depth"])
+
     print("Depth Pro estimates focal length")
-    if depth:
-        return to_numpy(prediction["focallength_px"]).item(), to_numpy(prediction["depth"])
-    else:
-        return to_numpy(prediction["focallength_px"]).item()
+
+    # ---- SAVE CACHE ----
+    np.savez_compressed(
+        cache_file,
+        focal=focal,
+        depth=depth_map
+    )
+
+    return (focal, depth_map) if depth else focal
 
 import multiprocessing as mp
 
@@ -220,62 +267,114 @@ def smooth_depth(depth_map):
     
     return blurred_depth
 
-def backward_warp_image(image, disparity, left_view=True, iterations=2):
-    """
-    Backward warp an image using source-aligned disparity with fixed-point iterations.
-    """
-    H, W = disparity.shape
-    C = image.shape[2]
-    shift_sign = 0.5 if left_view else -0.5
+import numpy as np
+from numba import njit, prange
 
-    # 1. Create target pixel grid
-    x_target, y_target = np.meshgrid(np.arange(W), np.arange(H))
-    x_target = x_target.astype(np.float32)
-    y_target = y_target.astype(np.float32)
+import numpy as np
+from numba import njit, prange
 
-    # 2. Initialize source coordinates
-    x_source = x_target.copy()
+import numpy as np
+from numba import njit, prange
 
-    # 3. Fixed-point iterations to solve x_source = x_target - shift * d[x_source]
-    for _ in range(iterations):
-        # Bilinear sample disparity at current source positions
-        d_interp = cv2.remap(
-            disparity.astype(np.float32),
-            x_source,
-            y_target,
-            interpolation=cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_REPLICATE
-        )
-        # Update source coordinates
-        x_source = x_target - shift_sign * d_interp
+@njit(parallel=True)
+def gpu_style_fill_numba(image, mask, left_view=True):
+    H, W, C = image.shape
+    out = image.copy()
 
-    # 4. Clip coordinates to valid range
-    x_source = np.clip(x_source, 0, W - 1)
-    y_source = np.clip(y_target, 0, H - 1)
+    for y in prange(H):
+        row = out[y]
 
-    # 5. Warp image
-    warped_img = np.zeros_like(image)
-    for c in range(C):
-        warped_img[..., c] = cv2.remap(
-            image[..., c],
-            x_source,
-            y_source,
-            interpolation=cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_CONSTANT,
-            borderValue=0
-        )
+        # -------------------------
+        # PASS 1
+        # -------------------------
+        if left_view:
+            order_start, order_end, step = 0, W, 1
+        else:
+            order_start, order_end, step = W - 1, -1, -1
 
-    # 6. Warp disparity to target view
-    warped_disparity = cv2.remap(
-        disparity.astype(np.float32),
-        x_source,
-        y_source,
-        interpolation=cv2.INTER_LINEAR,
-        borderMode=cv2.BORDER_CONSTANT,
-        borderValue=0
-    )
+        last_valid = np.full((C,), np.nan, dtype=np.float32)
+        pixel_count = 0
+        for x in range(order_start, order_end, step):
+            if not mask[y, x]:
+                pixel_count += 1
+                # only accept stable region AFTER run is confirmed
+                if pixel_count >= 15:
+                    last_valid = row[x].copy()
+            else:
+                pixel_count = 0
+                if not np.isnan(last_valid).all():
+                    for c in range(C):
+                        row[x, c] = last_valid[c]
+                    mask[y, x] = False
 
-    return warped_img, warped_disparity
+
+    return out
+
+import numpy as np
+from scipy.spatial import cKDTree
+
+def warp_image_zbuffer(image, disparity, predicted_depth, left_view=True):
+    img = np.asarray(image)
+    disp = np.asarray(disparity, dtype=np.float32)
+    depth = np.asarray(predicted_depth, dtype=np.float32)
+
+    if img.ndim == 2:
+        img = img[..., None]
+
+    h, w, c = img.shape
+    img_f = img.astype(np.float32)
+
+    yy, xx = np.indices((h, w), dtype=np.float32)
+
+    # shift direction
+    shift = (0.5 if left_view else -0.5) * disp
+    x_dst = xx + shift
+
+    x0 = np.rint(x_dst).astype(np.int32)
+
+    # valid pixels
+    valid = (x0 >= 0) & (x0 < w)
+    valid_flat = valid.ravel()
+
+    yy_i = yy.astype(np.int32)
+    xx_i = xx.astype(np.int32)
+
+    depth_flat = depth.ravel()
+    img_flat = img_f.reshape(-1, c)
+
+    src_idx = (yy_i * w + xx_i).ravel()[valid_flat]
+    dst_idx = (yy_i * w + x0).ravel()[valid_flat]
+
+    d = depth_flat[valid_flat]
+    src = img_flat[src_idx]
+
+    # z-buffer resolve
+    order = np.lexsort((d, dst_idx))
+    dst_idx = dst_idx[order]
+    src_idx = src_idx[order]
+
+    first = np.ones(dst_idx.shape[0], dtype=bool)
+    first[1:] = dst_idx[1:] != dst_idx[:-1]
+
+    dst_keep = dst_idx[first]
+    src_keep = src_idx[first]
+
+    # warped output
+    out = np.full((h * w, c), np.nan, dtype=np.float32)
+    out[dst_keep] = img_f.reshape(-1, c)[src_keep]
+
+    out = out.reshape(h, w, c)
+
+    # =========================================================
+    # 🧠 DEPTH-AWARE HOLE FILLING
+    # =========================================================
+
+    mask = np.isnan(out[..., 0])
+    out = gpu_style_fill_numba(out, mask, left_view)
+    out = gpu_style_fill_numba(out, mask, not left_view)
+    
+
+    return out.astype(image.dtype, copy=False)
 
 
 if __name__ == "__main__":
@@ -334,7 +433,6 @@ if __name__ == "__main__":
         print(predicted_depth.min(), predicted_depth.max())
         threshold_to_image(predicted_depth, value=DEPTH_ZERO, output_path=path.splitext(FILE)[0] + "_threshold.png")
         predicted_focal_length_px = predict_focal_length_px(FILE, FOCAL_LENGTH)
-    predicted_depth = smooth_depth(predicted_depth)
     #print(predicted_depth)
     save_scaled_image(predicted_depth, path.splitext(FILE)[0] + '_depth.png')
     print(predicted_focal_length_px)
@@ -342,8 +440,8 @@ if __name__ == "__main__":
     print(disparity)
     save_disparity_8bit(disparity, path.splitext(FILE)[0] + "_disparity.png")
     image = np.array(Image.open(FILE))  # open image
-    warped_left, _ = backward_warp_image(image, disparity, left_view=True)
-    warped_right, _ = backward_warp_image(image, disparity, left_view=False)
+    warped_left = warp_image_zbuffer(image, disparity, predicted_depth, left_view=True)
+    warped_right = warp_image_zbuffer(image, disparity, predicted_depth, left_view=False)
     Image.fromarray(warped_left).save(path.splitext(FILE)[0] + '_left.png')
     Image.fromarray(warped_right).save(path.splitext(FILE)[0] + '_right.png')
 
