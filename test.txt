@@ -1,3 +1,4 @@
+python -m main --file banner_hires.png --depth_zero 2 --fill_size=2 --blur      
 (base) johnzhou@Johns-MBP spatial-image-generator % python main.py --file anna.jpeg --depth_zero=7 --focal_length=8000 --mode=vkitti
 python main.py --file merch.png --depth_zero 1.55 --depth_adj 0.7 --depthpro
 # scale 2nd line with 1.2
