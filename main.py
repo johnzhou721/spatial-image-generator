@@ -20,6 +20,7 @@ import hashlib
 
 DEVICE = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
 FILL_SIZE = 3
+BLUR = False
 
 def _cache_path(image_path, cache_dir="checkpoints"):
     h = hashlib.md5(image_path.encode()).hexdigest()
@@ -192,7 +193,7 @@ def smooth_depth(depth_map):
     
     blurred_depth = cv2.GaussianBlur(depth_float, (3, 3), sigmaX=0, sigmaY=0)
     
-    return depth_float
+    return blurred_depth if BLUR else depth_float
 
 import numpy as np
 from numba import njit, prange
@@ -327,6 +328,7 @@ if __name__ == "__main__":
     parser.add_argument(
         '--fill_size', type=int, default=3, help="How many pixels of blank to be treated as 'small' and allow blend"
     )
+    parser.add_argument('--blur', action='store_true')
     parser.add_argument(
         '--size', type=str, default='vitl',
         help="Encoder size (default: %(default)s)"
@@ -352,6 +354,7 @@ if __name__ == "__main__":
     FOCAL_LENGTH = args.focal_length
     DEPTHPRO = args.depthpro
     FILL_SIZE = args.fill_size
+    BLUR = args.blur
 
 
 
