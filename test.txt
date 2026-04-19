@@ -2,4 +2,4 @@
 python main.py --file merch.png --depth_zero 1.55 --depth_adj 0.7 --depthpro
 # scale 2nd line with 1.2
 python -m main --file frozenpromo.png --depth_zero 1.2
-python -m main --file alone.png --depth_zero 2 --depth_adj 0.4 --depthpro
+python -m main --file alone.png --depth_zero 2 --depth_adj 0.4 --depthpro --fill_size=4

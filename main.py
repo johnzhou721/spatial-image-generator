@@ -19,6 +19,7 @@ import argparse
 import hashlib
 
 DEVICE = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
+FILL_SIZE = 3
 
 def _cache_path(image_path, cache_dir="checkpoints"):
     h = hashlib.md5(image_path.encode()).hexdigest()
@@ -189,7 +190,7 @@ def save_disparity_8bit(disparity: np.ndarray, path: str):
 def smooth_depth(depth_map):
     depth_float = depth_map.astype(np.float32)
     
-    # blurred_depth = cv2.GaussianBlur(depth_float, (3, 3), sigmaX=0, sigmaY=0)
+    blurred_depth = cv2.GaussianBlur(depth_float, (3, 3), sigmaX=0, sigmaY=0)
     
     return depth_float
 
@@ -220,9 +221,9 @@ def gpu_style_fill_numba(image, mask, left_view=True):
         last_valid_loc = 0
         for x in range(order_start, order_end, step):
             if not mask[y, x]:
-                if x - last_valid_loc - 1 > 0:
-                    validator = last_valid if x - last_valid_loc - 1 >= 3 else row[last_valid_loc].copy()
-                    for i in range(last_valid_loc+1, x):
+                if abs(x - last_valid_loc) - 1 > 0:
+                    validator = last_valid if abs(x - last_valid_loc) - 1 >= FILL_SIZE else row[last_valid_loc].copy()
+                    for i in range(last_valid_loc+1, x, step):
                         if not np.isnan(validator).all():
                             for c in range(C):
                                 row[i, c] = validator[c]
@@ -324,6 +325,9 @@ if __name__ == "__main__":
         help="Mode setting: 'hypersim' for indoor, 'vkitti' for outdoor scenes (default: %(default)s)"
     )
     parser.add_argument(
+        '--fill_size', type=int, default=3, help="How many pixels of blank to be treated as 'small' and allow blend"
+    )
+    parser.add_argument(
         '--size', type=str, default='vitl',
         help="Encoder size (default: %(default)s)"
     )
@@ -347,6 +351,7 @@ if __name__ == "__main__":
     SIZE = args.size
     FOCAL_LENGTH = args.focal_length
     DEPTHPRO = args.depthpro
+    FILL_SIZE = args.fill_size
 
 
 
