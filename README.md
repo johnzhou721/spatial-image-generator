@@ -1,6 +1,8 @@
 A Python script to generate spatial images for visionOS
 from a single view.
 
+TODO:  I've just found that my warping heuristic is trash, and that the essential idea of separating various sizes of rounding issues and disocclusions is captured by [this paper](https://ieeexplore.ieee.org/document/6622773) from 2013.  I'm currently trying to implement that heuristic, since I'm very against AI or diffusion for halluncinating things.  A nerual network for depth is fine, as it's 1 interpretation of a scene's geometry, not creating new geometry or content.
+
 
 
 I ultimately intend this to compete with Spatial Media Toolkit,
