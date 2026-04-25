@@ -259,7 +259,7 @@ def gpu_style_fill_numba(image, mask, left_view=True):
 
                 pixel_count += 1
                 # only accept stable region AFTER run is confirmed
-                if pixel_count >= 15:
+                if pixel_count >= FILL_SIZE:
                     last_valid = row[x].copy()
                     last_actually_valid_loc = x
                 last_nonmasked_loc = x
