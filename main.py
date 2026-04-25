@@ -204,7 +204,7 @@ from numba import njit, prange
 import numpy as np
 from numba import njit, prange
 
-# @njit(parallel=True)
+@njit(parallel=True)
 def gpu_style_fill_numba(image, mask, left_view=True):
     H, W, C = image.shape
     out = image.copy()
@@ -217,7 +217,7 @@ def gpu_style_fill_numba(image, mask, left_view=True):
         else:
             order_start, order_end, step = W - 1, -1, -1
 
-        last_valid = np.full((C,), np.nan, dtype=np.float32)
+        last_valid = np.full((C,), np.nan, dtype=row.dtype)
         last_actually_valid_loc = -1 if left_view else W
         pixel_count = 0
         last_nonmasked_loc = -1 if left_view else W
@@ -244,12 +244,12 @@ def gpu_style_fill_numba(image, mask, left_view=True):
                     else:
                         avg_rgba = last_valid.copy()
                     if abs(x - last_nonmasked_loc) - 1 >= FILL_SIZE:
-                        validator = avg_rgba
+                        validator = avg_rgba.astype(np.float64)
                     else:
                         if 0 <= last_nonmasked_loc < row.shape[0]:
-                            validator = row[last_nonmasked_loc].copy()
+                            validator = row[last_nonmasked_loc].copy().astype(np.float64)
                         else:
-                            validator = np.full((row.shape[1],), np.nan)
+                            validator = np.full((row.shape[1],), np.nan).astype(np.float64)
                     # print(y, x, last_actually_valid_loc, last_nonmasked_loc, idx, validator, avg_rgba)
                     for i in range(last_nonmasked_loc+step, x, step):
                         if not np.isnan(validator).all():
@@ -259,7 +259,7 @@ def gpu_style_fill_numba(image, mask, left_view=True):
 
                 pixel_count += 1
                 # only accept stable region AFTER run is confirmed
-                if pixel_count >= FILL_SIZE:
+                if pixel_count >= FILL_SIZE + 5:
                     last_valid = row[x].copy()
                     last_actually_valid_loc = x
                 last_nonmasked_loc = x
@@ -291,7 +291,19 @@ def warp_image_zbuffer(image, disparity, predicted_depth, left_view=True):
     x0 = np.rint(x_dst).astype(np.int32)
 
     # valid pixels
-    valid = (x0 >= 0) & (x0 < w)
+    # --- depth gradient mask ---
+    gx = np.zeros_like(depth, dtype=np.float32)
+    gy = np.zeros_like(depth, dtype=np.float32)
+
+    gx[:, 1:-1] = (depth[:, 2:] - depth[:, :-2]) * 0.5
+    gy[1:-1, :] = (depth[2:, :] - depth[:-2, :]) * 0.5
+
+    grad_mag = np.sqrt(gx**2 + gy**2)
+
+    # suppress high-gradient pixels
+    stable_mask = grad_mag <= 0.26
+
+    valid = (x0 >= 0) & (x0 < w)# & stable_mask
     valid_flat = valid.ravel()
 
     yy_i = yy.astype(np.int32)
