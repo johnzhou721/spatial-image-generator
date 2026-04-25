@@ -204,7 +204,7 @@ from numba import njit, prange
 import numpy as np
 from numba import njit, prange
 
-@njit(parallel=True)
+# @njit(parallel=True)
 def gpu_style_fill_numba(image, mask, left_view=True):
     H, W, C = image.shape
     out = image.copy()
@@ -218,13 +218,40 @@ def gpu_style_fill_numba(image, mask, left_view=True):
             order_start, order_end, step = W - 1, -1, -1
 
         last_valid = np.full((C,), np.nan, dtype=np.float32)
+        last_actually_valid_loc = -1 if left_view else W
         pixel_count = 0
-        last_valid_loc = 0
+        last_nonmasked_loc = -1 if left_view else W
         for x in range(order_start, order_end, step):
             if not mask[y, x]:
-                if abs(x - last_valid_loc) - 1 > 0:
-                    validator = last_valid if abs(x - last_valid_loc) - 1 >= FILL_SIZE else row[last_valid_loc].copy()
-                    for i in range(last_valid_loc+1, x, step):
+                if abs(x - last_nonmasked_loc) - 1 > 0:
+                    valid = True
+                    idx = 0
+                    for c in range(C):
+                        if np.isnan(last_valid[c]):
+                            valid = False
+                            break
+                    if abs(x - last_nonmasked_loc) - 1 >= FILL_SIZE and valid:
+                        s = np.zeros(C, dtype=row.dtype)
+                        count = 0
+                        idx = 0
+                        for i in range(20):
+                            idx = last_actually_valid_loc - step * i
+                            if 0 <= idx < row.shape[0]:
+                                for c in range(C):
+                                    s[c] += row[idx, c]
+                                count += 1
+                        avg_rgba = s / count if count > 0 else s
+                    else:
+                        avg_rgba = last_valid.copy()
+                    if abs(x - last_nonmasked_loc) - 1 >= FILL_SIZE:
+                        validator = avg_rgba
+                    else:
+                        if 0 <= last_nonmasked_loc < row.shape[0]:
+                            validator = row[last_nonmasked_loc].copy()
+                        else:
+                            validator = np.full((row.shape[1],), np.nan)
+                    # print(y, x, last_actually_valid_loc, last_nonmasked_loc, idx, validator, avg_rgba)
+                    for i in range(last_nonmasked_loc+step, x, step):
                         if not np.isnan(validator).all():
                             for c in range(C):
                                 row[i, c] = validator[c]
@@ -234,7 +261,8 @@ def gpu_style_fill_numba(image, mask, left_view=True):
                 # only accept stable region AFTER run is confirmed
                 if pixel_count >= 15:
                     last_valid = row[x].copy()
-                last_valid_loc = x
+                    last_actually_valid_loc = x
+                last_nonmasked_loc = x
             else:
                 pixel_count = 0
 
@@ -242,7 +270,6 @@ def gpu_style_fill_numba(image, mask, left_view=True):
     return out
 
 import numpy as np
-from scipy.spatial import cKDTree
 
 def warp_image_zbuffer(image, disparity, predicted_depth, left_view=True):
     img = np.asarray(image)
@@ -298,7 +325,6 @@ def warp_image_zbuffer(image, disparity, predicted_depth, left_view=True):
 
     mask = np.isnan(out[..., 0])
     out = gpu_style_fill_numba(out, mask, left_view)
-    out = gpu_style_fill_numba(out, mask, not left_view)
     
 
     return out.astype(image.dtype, copy=False)
